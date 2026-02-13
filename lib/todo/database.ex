@@ -13,30 +13,36 @@ defmodule Todo.Database do
     GenServer.call(__MODULE__, {:get, key})
   end
 
+  def choose_worker(key) do
+    :erlang.phash2(key, 3)
+  end
+
   def init(_) do
     File.mkdir_p!(@db_folder)
-    {:ok, nil}
+
+    workers =
+      0..2
+      |> Enum.map(fn i -> {i, Todo.DatabaseWorker.start(@db_folder)} end)
+      |> Enum.into(%{})
+
+    {:ok, workers}
   end
 
-  def handle_cast({:store, key, data}, state) do
-    key
-    |> file_name()
-    |> File.write!(:erlang.term_to_binary(data))
+  def handle_cast({:store, key, data}, workers) do
+    worker_id = choose_worker(key)
+    worker_pid = Map.fetch!(workers, worker_id)
 
-    {:noreply, state}
+    Todo.DatabaseWorker.store(worker_pid, key, data)
+
+    {:noreply, workers}
   end
 
-  def handle_call({:get, key}, _, state) do
-    data =
-      case File.read(file_name(key)) do
-        {:ok, contents} -> :erlang.binary_to_term(contents)
-        _ -> nil
-      end
+  def handle_call({:get, key}, _, workers) do
+    worker_id = choose_worker(key)
+    worker_pid = Map.fetch!(workers, worker_id)
 
-    {:reply, data, state}
-  end
+    data = Todo.DatabaseWorker.get(worker_pid, key)
 
-  defp file_name(key) do
-    Path.join(@db_folder, to_string(key))
+    {:reply, data, workers}
   end
 end
